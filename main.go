@@ -203,6 +203,22 @@ func (cfg *Config) handleTokenRequest(w http.ResponseWriter, req *http.Request) 
 	w.Write(bodyBytes)
 }
 
+const credentialsPrefix = "/latest/meta-data/iam/security-credentials"
+
+// matchCredentialsPath reports whether path targets the credentials endpoint,
+// and if so returns the role name (empty for the role-list request).
+// Both trailing-slash and no-trailing-slash forms are accepted to match real EC2 IMDS.
+func matchCredentialsPath(path string) (role string, ok bool) {
+	path = strings.TrimSuffix(path, "/")
+	if path == credentialsPrefix {
+		return "", true
+	}
+	if strings.HasPrefix(path, credentialsPrefix+"/") {
+		return path[len(credentialsPrefix)+1:], true
+	}
+	return "", false
+}
+
 func (cfg *Config) handleRequest(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "Method not allowed")
@@ -219,13 +235,12 @@ func (cfg *Config) handleRequest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if req.URL.Path == "/latest/meta-data/iam/security-credentials/" {
+	role, _ := matchCredentialsPath(req.URL.Path)
+	if role == "" {
 		cfg.handleRoleRequest(w, req)
 		return
-	} else {
-		role := req.URL.Path[len("/latest/meta-data/iam/security-credentials/"):]
-		cfg.handleCredentialRequest(w, req, role)
 	}
+	cfg.handleCredentialRequest(w, req, role)
 }
 
 func (cfg *Config) handleRoleRequest(w http.ResponseWriter, req *http.Request) {
@@ -354,7 +369,7 @@ func (cfg *Config) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	log.Println(req.Method, req.URL.Path)
 	if req.URL.Path == "/latest/api/token" {
 		cfg.handleTokenRequest(w, req)
-	} else if strings.HasPrefix(req.URL.Path, "/latest/meta-data/iam/security-credentials/") {
+	} else if _, ok := matchCredentialsPath(req.URL.Path); ok {
 		cfg.handleRequest(w, req)
 	} else {
 		writeError(w, http.StatusNotFound, "InvalidPath", "Invalid path")
