@@ -50,7 +50,7 @@ type errorBody struct {
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Add("Content-type", "application/json")
-	w.WriteHeader(http.StatusMethodNotAllowed)
+	w.WriteHeader(status)
 	errorBody := errorBody{
 		Error: innerError{
 			Code:    code,
@@ -89,10 +89,13 @@ func NewConfig(awsCfg aws.Config) *Config {
 	nameParts := strings.Split(arnParts[len(arnParts)-1], "/")
 	nameType := nameParts[0]
 	var principalName string
-	if nameType == "user" {
+	switch {
+	case nameType == "user":
 		principalName = nameParts[len(nameParts)-1]
-	} else {
+	case len(nameParts) >= 2:
 		principalName = nameParts[1]
+	default:
+		principalName = nameType
 	}
 
 	return &Config{
@@ -238,6 +241,10 @@ func (cfg *Config) handleRequest(w http.ResponseWriter, req *http.Request) {
 	role, _ := matchCredentialsPath(req.URL.Path)
 	if role == "" {
 		cfg.handleRoleRequest(w, req)
+		return
+	}
+	if role != cfg.PrincipalName {
+		writeError(w, http.StatusNotFound, "NotFound", "Role not found")
 		return
 	}
 	cfg.handleCredentialRequest(w, req, role)
@@ -400,7 +407,17 @@ func main() {
 		*spec = "localhost" + *spec
 	}
 
-	awsConfig, err := config.LoadDefaultConfig(context.TODO(), config.WithSharedConfigProfile(*profile))
+	var loadOpts []func(*config.LoadOptions) error
+	if *profile != "" {
+		loadOpts = append(loadOpts, config.WithSharedConfigProfile(*profile))
+	}
+	// Refresh credentials ahead of actual expiry so a request never lands on the
+	// moment creds go stale. Matters most for SSO/assume-role profiles, where the
+	// SDK would otherwise refresh exactly at expiry.
+	loadOpts = append(loadOpts, config.WithCredentialsCacheOptions(func(o *aws.CredentialsCacheOptions) {
+		o.ExpiryWindow = 5 * time.Minute
+	}))
+	awsConfig, err := config.LoadDefaultConfig(context.TODO(), loadOpts...)
 	if err != nil {
 		log.Fatal(err)
 	}
